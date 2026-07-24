@@ -108,32 +108,48 @@ public class CodexClient {
             You are a Python data pipeline generator.
             Output ONLY executable Python code - no markdown fences, no explanation text.
 
-            CRITICAL - dependencies: This machine only has Python's standard
-            library installed (no numpy, no pandas, no scikit-learn, no torch,
-            no tensorflow). Do NOT import any third-party package unless the task
-            description below explicitly names that exact library by name.
-            Use only built-in modules: math, statistics, json, csv, random,
-            datetime, itertools, collections. Implement any averaging, scaling,
-            or regression logic manually using plain Python instead of a library.
+            LIBRARY RULE (read carefully):
+            First, check whether the task description below names a specific
+            third-party library or technique (examples: pandas, numpy,
+            scikit-learn, RandomForestRegressor, RandomForest, XGBoost,
+            LightGBM, TensorFlow, PyTorch, Keras, GradientBoosting).
+
+            - If it DOES name one, you MUST import and actually use that exact
+              library/class in the code - this is required, not optional, even
+              though only pandas, numpy, scikit-learn, tensorflow, and torch
+              are installed on this machine (that is the full set of
+              third-party packages available; assume the specific one named
+              in the task is present and import it directly).
+            - If it does NOT name any third-party library, use only Python's
+              standard library: math, statistics, json, csv, random, datetime,
+              itertools, collections. Implement any averaging, scaling, or
+              regression logic manually using plain Python in that case.
+
+            Do not silently fall back to the standard library when a specific
+            library was named in the task - that is treated as a failed task.
 
             CRITICAL - data: Do NOT read from any external file (no pd.read_csv,
             no open(), no data.csv). There is no dataset file on disk. Instead,
             embed a small sample dataset directly in the code as a Python list
             of dicts (8-12 rows) with realistic values for these fields: city,
-            pm25, pm10, temperature, timestamp (ISO format string). Use that
-            embedded data for the task below.
+            pm25, pm10, temperature, timestamp (ISO format string), and any
+            other fields the task needs (e.g. humidity, wind_speed) - even if
+            the task mentions millions of records, the embedded sample should
+            still only be 8-12 rows; write the pipeline logic as if it were
+            processing the full dataset. Use that embedded data for the task
+            below.
 
             Task: %s
 
             Requirements:
             - Include a main() function with no arguments
-            - The script must run standalone with no internet access, no file
-              access, and no dependencies beyond the standard library, unless
-              the task explicitly names a specific third-party library to use
+            - The script must run standalone with no internet access and no
+              file access
             - Print the final result as a single line of valid JSON at the end
             - Keep it under 60 lines
             """.formatted(taskDescription);
     }
+
     private String extractCode(String raw) {
 
         Matcher matcher = CODE_FENCE.matcher(raw);
