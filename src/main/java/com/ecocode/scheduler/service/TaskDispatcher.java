@@ -27,16 +27,25 @@ public class TaskDispatcher {
 
     public record DispatchDecision(
             GpuNode node,
+            GpuNode preferredNode,
+            boolean fallbackOccurred,
             EnergyEstimate energyEstimate
     ) {
     }
 
     public DispatchDecision dispatch(ComplexityScore score) {
 
+        // Full cluster (unfiltered) — used to know what the "ideal" node
+        // would have been, even if it's currently overloaded.
+        List<GpuNode> allNodes = clusterService.getNodes();
+
+        GpuNode idealNodeA = findById(allNodes, "GPU_NODE_A");
+        GpuNode idealNodeB = findById(allNodes, "GPU_NODE_B");
+        GpuNode idealNodeC = findById(allNodes, "GPU_NODE_C");
+
         // Only exclude nodes that are extremely busy
         List<GpuNode> nodes =
-                clusterService.getNodes()
-                        .stream()
+                allNodes.stream()
                         .filter(node ->
                                 node.getLoadPercent() < EXTREME_LOAD_THRESHOLD)
                         .toList();
@@ -47,7 +56,7 @@ public class TaskDispatcher {
 
 
         // ======================================
-        // Find Nodes
+        // Find Nodes (available only)
         // ======================================
 
         GpuNode nodeA = nodes.stream()
@@ -70,6 +79,7 @@ public class TaskDispatcher {
 
 
         GpuNode chosen = null;
+        GpuNode preferred;
 
 
         // ======================================
@@ -87,6 +97,8 @@ public class TaskDispatcher {
              * Only 90%+ load is considered extreme
              * and filtered out above.
              */
+
+            preferred = idealNodeA;
 
             if (nodeA != null) {
                 chosen = nodeA;
@@ -112,6 +124,8 @@ public class TaskDispatcher {
              * Batchable tasks prefer Node C.
              */
 
+            preferred = idealNodeC;
+
             if (nodeC != null) {
                 chosen = nodeC;
             }
@@ -135,6 +149,8 @@ public class TaskDispatcher {
             /*
              * Heavy CPU tasks prefer Node B.
              */
+
+            preferred = idealNodeB;
 
             if (nodeB != null) {
                 chosen = nodeB;
@@ -160,6 +176,13 @@ public class TaskDispatcher {
             );
         }
 
+        // Fallback happened if the node we actually picked isn't the
+        // preferred one (either because it was overloaded/excluded,
+        // or simply missing from the cluster).
+        boolean fallbackOccurred =
+                preferred == null
+                        || !preferred.getId().equals(chosen.getId());
+
 
         // ======================================
         // Energy Estimation
@@ -177,11 +200,20 @@ public class TaskDispatcher {
 
         return new DispatchDecision(
                 chosen,
+                preferred,
+                fallbackOccurred,
                 energyEstimator.estimate(
                         score,
                         chosen,
                         worstCaseMultiplier
                 )
         );
+    }
+
+    private GpuNode findById(List<GpuNode> nodes, String id) {
+        return nodes.stream()
+                .filter(n -> n.getId().equals(id))
+                .findFirst()
+                .orElse(null);
     }
 }
