@@ -11,12 +11,11 @@ import java.util.List;
 @Service
 public class TaskDispatcher {
 
-    private static final int LOAD_AVOID_THRESHOLD = 70;
+    // Node is considered extremely busy above this load
     private static final int EXTREME_LOAD_THRESHOLD = 90;
 
     private final GpuClusterService clusterService;
     private final EnergyEstimator energyEstimator;
-
 
     public TaskDispatcher(
             GpuClusterService clusterService,
@@ -26,16 +25,15 @@ public class TaskDispatcher {
         this.energyEstimator = energyEstimator;
     }
 
-
     public record DispatchDecision(
             GpuNode node,
             EnergyEstimate energyEstimate
     ) {
     }
 
-
     public DispatchDecision dispatch(ComplexityScore score) {
 
+        // Only exclude nodes that are extremely busy
         List<GpuNode> nodes =
                 clusterService.getNodes()
                         .stream()
@@ -47,20 +45,62 @@ public class TaskDispatcher {
             throw new RuntimeException("No available node.");
         }
 
-        GpuNode chosen;
 
         // ======================================
-        // GPU Tasks
+        // Find Nodes
+        // ======================================
+
+        GpuNode nodeA = nodes.stream()
+                .filter(n ->
+                        n.getId().equals("GPU_NODE_A"))
+                .findFirst()
+                .orElse(null);
+
+        GpuNode nodeB = nodes.stream()
+                .filter(n ->
+                        n.getId().equals("GPU_NODE_B"))
+                .findFirst()
+                .orElse(null);
+
+        GpuNode nodeC = nodes.stream()
+                .filter(n ->
+                        n.getId().equals("GPU_NODE_C"))
+                .findFirst()
+                .orElse(null);
+
+
+        GpuNode chosen = null;
+
+
+        // ======================================
+        // GPU / AI Tasks
         // ======================================
 
         if (score.isGpuRequired()) {
 
-            chosen = nodes.stream()
-                    .min(Comparator.comparingInt(
-                            GpuNode::getLoadPercent
-                    ))
-                    .orElseThrow();
+            /*
+             * GPU tasks prefer Node A.
+             *
+             * Node A can still be selected even if
+             * its load is above 70%.
+             *
+             * Only 90%+ load is considered extreme
+             * and filtered out above.
+             */
+
+            if (nodeA != null) {
+                chosen = nodeA;
+            }
+
+            else if (nodeB != null) {
+                chosen = nodeB;
+            }
+
+            else {
+                chosen = nodeC;
+            }
         }
+
 
         // ======================================
         // Small / Batchable Tasks
@@ -68,12 +108,23 @@ public class TaskDispatcher {
 
         else if (score.isBatchable()) {
 
-            chosen = nodes.stream()
-                    .min(Comparator.comparingInt(
-                            GpuNode::getLoadPercent
-                    ))
-                    .orElseThrow();
+            /*
+             * Batchable tasks prefer Node C.
+             */
+
+            if (nodeC != null) {
+                chosen = nodeC;
+            }
+
+            else if (nodeB != null) {
+                chosen = nodeB;
+            }
+
+            else {
+                chosen = nodeA;
+            }
         }
+
 
         // ======================================
         // Heavy CPU Tasks
@@ -81,12 +132,38 @@ public class TaskDispatcher {
 
         else {
 
-            chosen = nodes.stream()
-                    .min(Comparator.comparingInt(
-                            GpuNode::getLoadPercent
-                    ))
-                    .orElseThrow();
+            /*
+             * Heavy CPU tasks prefer Node B.
+             */
+
+            if (nodeB != null) {
+                chosen = nodeB;
+            }
+
+            else if (nodeA != null) {
+                chosen = nodeA;
+            }
+
+            else {
+                chosen = nodeC;
+            }
         }
+
+
+        // ======================================
+        // Safety Check
+        // ======================================
+
+        if (chosen == null) {
+            throw new RuntimeException(
+                    "Unable to select a node."
+            );
+        }
+
+
+        // ======================================
+        // Energy Estimation
+        // ======================================
 
         double worstCaseMultiplier =
                 clusterService.getNodes()
@@ -96,6 +173,7 @@ public class TaskDispatcher {
                         )
                         .max()
                         .orElse(1.0);
+
 
         return new DispatchDecision(
                 chosen,
@@ -107,4 +185,3 @@ public class TaskDispatcher {
         );
     }
 }
-
