@@ -36,6 +36,17 @@ public class TaskRecord {
     private String generatedCode;
 
     private String assignedNode;
+
+    // The node the scheduler would have preferred for this task type
+    // (GPU tasks -> Node A, batchable -> Node C, heavy CPU -> Node B),
+    // regardless of whether it was available. Lets the frontend show
+    // when a fallback happened.
+    private String preferredNode;
+
+    // True when assignedNode != preferredNode (the preferred node was
+    // filtered out, e.g. because it was over the extreme-load threshold).
+    private boolean fallbackOccurred;
+
     private double estimatedKwh;
     private double co2Kg;
     private double greenScore;
@@ -96,6 +107,22 @@ public class TaskRecord {
 
     public void setAssignedNode(String assignedNode) {
         this.assignedNode = assignedNode;
+    }
+
+    public String getPreferredNode() {
+        return preferredNode;
+    }
+
+    public void setPreferredNode(String preferredNode) {
+        this.preferredNode = preferredNode;
+    }
+
+    public boolean isFallbackOccurred() {
+        return fallbackOccurred;
+    }
+
+    public void setFallbackOccurred(boolean fallbackOccurred) {
+        this.fallbackOccurred = fallbackOccurred;
     }
 
     public double getEstimatedKwh() {

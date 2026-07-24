@@ -35,7 +35,6 @@ public class TaskOrchestrationService {
             TaskDispatcher taskDispatcher,
             PipelineRunner pipelineRunner,
             TaskRepository taskRepository) {
-
         this.codexClient = codexClient;
         this.aqiClient = aqiClient;
         this.taskAnalyser = taskAnalyser;
@@ -45,15 +44,11 @@ public class TaskOrchestrationService {
     }
 
     public TaskRecord submit(String description) {
-
         String taskId = "task-" + UUID.randomUUID().toString().substring(0, 8);
-
         TaskRecord task = new TaskRecord(taskId, description);
-
         taskRepository.save(task);
 
         try {
-
             task.setStatus(TaskStatus.RUNNING);
 
             // Fetch LIVE AQI data
@@ -63,9 +58,10 @@ public class TaskOrchestrationService {
             String code = codexClient.generatePipeline(description);
             task.setGeneratedCode(code);
 
-            // Analyse complexity
-            ComplexityScore score = taskAnalyser.analyse(description);
-
+            // Analyse complexity (checks both the generated code AND
+            // the original description, so GPU-intent tasks are still
+            // detected even if code generation failed/refused)
+            ComplexityScore score = taskAnalyser.analyse(code, description);
             task.setComplexityUnits(score.getComplexityUnits());
             task.setGpuRequired(score.isGpuRequired());
             task.setBatchable(score.isBatchable());
@@ -73,28 +69,25 @@ public class TaskOrchestrationService {
             // Choose GPU node
             TaskDispatcher.DispatchDecision decision =
                     taskDispatcher.dispatch(score);
-
             task.setAssignedNode(decision.node().getId());
+            task.setPreferredNode(
+                    decision.preferredNode() != null ? decision.preferredNode().getId() : null);
+            task.setFallbackOccurred(decision.fallbackOccurred());
             task.setEstimatedKwh(decision.energyEstimate().getKwhCost());
             task.setCo2Kg(decision.energyEstimate().getCo2Kg());
             task.setGreenScore(decision.energyEstimate().getGreenScore());
 
             // Execute using LIVE AQI values
             String result = pipelineRunner.run(code, aqi);
-
             task.setExecutionResult(result);
 
             task.setStatus(TaskStatus.COMPLETE);
-
         } catch (Exception e) {
-
             task.setStatus(TaskStatus.FAILED);
             task.setErrorMessage(e.getMessage());
-
         }
 
         taskRepository.save(task);
-
         return task;
     }
 }
