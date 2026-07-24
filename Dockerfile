@@ -23,7 +23,7 @@ WORKDIR /app
 COPY --from=build /app/target/scheduler-0.0.1-SNAPSHOT.jar app.jar
 
 # Copy Python dependencies
-COPY src/main/requirements.txt .
+COPY src/main/java/com/ecocode/scheduler/requirements.txt .
 
 # Install Python dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt
