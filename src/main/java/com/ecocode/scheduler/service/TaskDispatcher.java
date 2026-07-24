@@ -47,7 +47,22 @@ public class TaskDispatcher {
             throw new RuntimeException("No available node.");
         }
 
-        GpuNode chosen;
+        GpuNode nodeA = nodes.stream()
+                .filter(n -> n.getId().equals("GPU_NODE_A"))
+                .findFirst()
+                .orElse(null);
+
+        GpuNode nodeB = nodes.stream()
+                .filter(n -> n.getId().equals("GPU_NODE_B"))
+                .findFirst()
+                .orElse(null);
+
+        GpuNode nodeC = nodes.stream()
+                .filter(n -> n.getId().equals("GPU_NODE_C"))
+                .findFirst()
+                .orElse(null);
+
+        GpuNode chosen = null;
 
         // ======================================
         // GPU Tasks
@@ -55,45 +70,52 @@ public class TaskDispatcher {
 
         if (score.isGpuRequired()) {
 
-            chosen = nodes.stream()
-                    .min(Comparator.comparingInt(
-                            GpuNode::getLoadPercent
-                    ))
-                    .orElseThrow();
+            if (nodeA != null && nodeA.getLoadPercent() < LOAD_AVOID_THRESHOLD)
+                chosen = nodeA;
+
+            else if (nodeB != null)
+                chosen = nodeB;
+
+            else
+                chosen = nodeC;
         }
 
         // ======================================
-        // Small / Batchable Tasks
+        // Small tasks
         // ======================================
 
         else if (score.isBatchable()) {
 
-            chosen = nodes.stream()
-                    .min(Comparator.comparingInt(
-                            GpuNode::getLoadPercent
-                    ))
-                    .orElseThrow();
+            if (nodeC != null)
+                chosen = nodeC;
+
+            else if (nodeB != null)
+                chosen = nodeB;
+
+            else
+                chosen = nodeA;
         }
 
         // ======================================
-        // Heavy CPU Tasks
+        // Heavy CPU tasks
         // ======================================
 
         else {
 
-            chosen = nodes.stream()
-                    .min(Comparator.comparingInt(
-                            GpuNode::getLoadPercent
-                    ))
-                    .orElseThrow();
+            if (nodeB != null)
+                chosen = nodeB;
+
+            else if (nodeA != null)
+                chosen = nodeA;
+
+            else
+                chosen = nodeC;
         }
 
         double worstCaseMultiplier =
                 clusterService.getNodes()
                         .stream()
-                        .mapToDouble(
-                                GpuNode::getEnergyMultiplier
-                        )
+                        .mapToDouble(GpuNode::getEnergyMultiplier)
                         .max()
                         .orElse(1.0);
 
@@ -107,3 +129,5 @@ public class TaskDispatcher {
         );
     }
 }
+
+ 
