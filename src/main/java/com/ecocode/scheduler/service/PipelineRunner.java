@@ -82,19 +82,18 @@ public class PipelineRunner {
             );
 
 
-            // Wrap the interpreter call with a shell "ulimit -v" so the
-            // sandbox enforces a hard memory ceiling, not just a time
-            // ceiling. Virtual memory is expressed in KB for ulimit.
-            int memoryLimitKb = MEMORY_LIMIT_MB * 1024;
-            String shellCommand = String.format(
-                    "ulimit -v %d; exec %s %s",
-                    memoryLimitKb,
-                    pythonExecutable,
-                    tempFile
-            );
-
+            // NOTE: ulimit -v (virtual memory) is intentionally NOT used here.
+            // numpy/pandas reserve large virtual address ranges on startup
+            // that are far bigger than physical memory actually used, so a
+            // ulimit -v ceiling kills/hangs the interpreter on totally normal
+            // pipelines. Time is a reliable, portable sandbox limit on its
+            // own; RSS-based memory limiting is done post-hoc below instead
+            // of via a hard interpreter-breaking ulimit.
             ProcessBuilder builder =
-                    new ProcessBuilder("sh", "-c", shellCommand);
+                    new ProcessBuilder(
+                            pythonExecutable,
+                            tempFile.toString()
+                    );
 
 
             builder.redirectErrorStream(true);
@@ -102,6 +101,41 @@ public class PipelineRunner {
 
             Process process =
                     builder.start();
+
+            long pid = process.pid();
+            java.util.concurrent.atomic.AtomicBoolean memoryExceeded =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+
+            // Poll the process's resident memory (RSS) in the background.
+            // This is a soft, portable memory sandbox that doesn't touch
+            // the interpreter's virtual address space the way ulimit -v
+            // does, so it doesn't break numpy/pandas startup.
+            Thread memoryWatcher = new Thread(() -> {
+                Path statusPath = Path.of("/proc", String.valueOf(pid), "status");
+                while (process.isAlive()) {
+                    try {
+                        if (Files.exists(statusPath)) {
+                            for (String line : Files.readAllLines(statusPath)) {
+                                if (line.startsWith("VmRSS:")) {
+                                    long rssKb = Long.parseLong(
+                                            line.replaceAll("[^0-9]", ""));
+                                    if (rssKb > (long) MEMORY_LIMIT_MB * 1024) {
+                                        memoryExceeded.set(true);
+                                        process.destroyForcibly();
+                                        return;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        Thread.sleep(200);
+                    } catch (Exception ignored) {
+                        return;
+                    }
+                }
+            });
+            memoryWatcher.setDaemon(true);
+            memoryWatcher.start();
 
 
             boolean finished =
@@ -136,9 +170,9 @@ public class PipelineRunner {
 
             int exitValue = process.exitValue();
 
-            // Exit code 137 = SIGKILL, the common signature of an
-            // OOM-killed or ulimit-killed process.
-            if (exitValue == 137 || output.toLowerCase().contains("memoryerror")) {
+            // Killed either by our RSS watcher (memoryExceeded flag) or by
+            // the OS OOM killer (exit code 137 = SIGKILL signature).
+            if (memoryExceeded.get() || exitValue == 137 || output.toLowerCase().contains("memoryerror")) {
                 String note = "Stopped: exceeded the " + MEMORY_LIMIT_MB + "MB sandbox memory limit.";
                 return ExecutionOutcome.stopped(mockResult(note), note);
             }
