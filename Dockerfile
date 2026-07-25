@@ -1,33 +1,24 @@
-# Build stage
-FROM maven:3.9.9-eclipse-temurin-21 AS build
+# --- Stage 1: build the Spring Boot jar ---
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn -q dependency:go-offline
+COPY src ./src
+RUN mvn -q clean package -DskipTests
 
+# --- Stage 2: runtime image with Java + Python3 (+ requirements.txt) ---
+FROM eclipse-temurin:21-jre
 WORKDIR /app
 
-COPY pom.xml .
-COPY src ./src
+COPY requirements.txt .
 
-RUN mvn clean package -DskipTests
-
-
-# Runtime stage
-FROM eclipse-temurin:21-jre-jammy
-
-# Install Python
 RUN apt-get update && \
-    apt-get install -y python3 python3-pip && \
+    apt-get install -y --no-install-recommends python3 python3-pip && \
+    pip3 install --no-cache-dir --break-system-packages -r requirements.txt && \
+    pip3 install --no-cache-dir --break-system-packages torch --index-url https://download.pytorch.org/whl/cpu && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
-# Copy Spring Boot JAR
-COPY --from=build /app/target/scheduler-0.0.1-SNAPSHOT.jar app.jar
-
-# Copy Python dependencies
-COPY src/main/java/com/ecocode/scheduler/requirements.txt .
-
-# Install Python dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
+COPY --from=build /app/target/*.jar app.jar
 
 EXPOSE 8080
-
 CMD ["java", "-jar", "app.jar"]

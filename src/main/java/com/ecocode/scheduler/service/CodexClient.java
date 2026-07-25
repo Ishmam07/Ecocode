@@ -116,10 +116,12 @@ public class CodexClient {
 
             - If it DOES name one, you MUST import and actually use that exact
               library/class in the code - this is required, not optional, even
-              though only pandas, numpy, scikit-learn, tensorflow, and torch
+              though only pandas, numpy, scikit-learn, and torch (CPU-only)
               are installed on this machine (that is the full set of
               third-party packages available; assume the specific one named
-              in the task is present and import it directly).
+              in the task is present and import it directly). Do NOT use
+              tensorflow or keras - they are not installed; if the task asks
+              for them, implement the equivalent using torch instead.
             - If it does NOT name any third-party library, use only Python's
               standard library: math, statistics, json, csv, random, datetime,
               itertools, collections. Implement any averaging, scaling, or

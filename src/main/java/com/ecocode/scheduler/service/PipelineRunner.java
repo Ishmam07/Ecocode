@@ -69,11 +69,14 @@ public class PipelineRunner {
 
 
             String pythonExecutable =
-                    System.getenv()
-                            .getOrDefault(
-                                    "PYTHON_EXECUTABLE",
-                                    "python3"
-                            );
+                    System.getProperty(
+                            "python.executable",
+                            System.getenv()
+                                    .getOrDefault(
+                                            "PYTHON_EXECUTABLE",
+                                            "python3"
+                                    )
+                    );
 
 
             log.info(
@@ -154,12 +157,36 @@ public class PipelineRunner {
             }
 
 
-            String output =
-                    new String(
-                            process.getInputStream()
-                                    .readAllBytes(),
-                            StandardCharsets.UTF_8
-                    ).trim();
+            // The memory watcher can destroyForcibly() the process at
+            // almost the same instant waitFor() returns "finished" (a
+            // forced kill still counts as termination). If that
+            // happened, the process's stdout pipe may already be
+            // broken/closed - reading it here would throw a confusing
+            // "Stream closed" IOException. Handle the memory-kill case
+            // FIRST, before ever touching the stream.
+            if (memoryExceeded.get()) {
+                String note = "Stopped: exceeded the " + MEMORY_LIMIT_MB + "MB sandbox memory limit.";
+                return ExecutionOutcome.stopped(mockResult(note), note);
+            }
+
+            String output;
+            try {
+                output =
+                        new String(
+                                process.getInputStream()
+                                        .readAllBytes(),
+                                StandardCharsets.UTF_8
+                        ).trim();
+            } catch (IOException streamClosed) {
+                // The process terminated (finished=true) but its output
+                // stream was already gone by the time we tried to read
+                // it - this means it was killed mid-run, not that the
+                // sandbox failed to start. Treat it as STOPPED, not as
+                // the generic "failed to start" case below.
+                log.warn("Process terminated but output stream was already closed", streamClosed);
+                String note = "Stopped: process was terminated before its output could be read.";
+                return ExecutionOutcome.stopped(mockResult(note), note);
+            }
 
 
             log.info(
@@ -170,9 +197,11 @@ public class PipelineRunner {
 
             int exitValue = process.exitValue();
 
-            // Killed either by our RSS watcher (memoryExceeded flag) or by
-            // the OS OOM killer (exit code 137 = SIGKILL signature).
-            if (memoryExceeded.get() || exitValue == 137 || output.toLowerCase().contains("memoryerror")) {
+            // Killed either by our RSS watcher (memoryExceeded flag, already
+            // handled above) or by the OS OOM killer (exit code 137 = SIGKILL
+            // signature) - the memoryExceeded flag can lag slightly behind
+            // the actual kill, so this is a second safety net.
+            if (exitValue == 137 || output.toLowerCase().contains("memoryerror")) {
                 String note = "Stopped: exceeded the " + MEMORY_LIMIT_MB + "MB sandbox memory limit.";
                 return ExecutionOutcome.stopped(mockResult(note), note);
             }
