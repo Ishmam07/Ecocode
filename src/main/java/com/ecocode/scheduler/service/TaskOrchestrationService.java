@@ -2,6 +2,8 @@ package com.ecocode.scheduler.service;
 
 import com.ecocode.scheduler.model.AqiMeasurement;
 import com.ecocode.scheduler.model.ComplexityScore;
+import com.ecocode.scheduler.model.GateVerdict;
+import com.ecocode.scheduler.model.SafetyGateResult;
 import com.ecocode.scheduler.model.TaskRecord;
 import com.ecocode.scheduler.model.TaskStatus;
 import com.ecocode.scheduler.repository.TaskRepository;
@@ -10,19 +12,21 @@ import org.springframework.stereotype.Service;
 import java.util.UUID;
 
 /**
- * Wires Layers 2-5 together:
+ * Wires the layers together:
  * 1. Fetch live AQI
  * 2. Generate Python
- * 3. Analyse complexity
- * 4. Dispatch to GPU node
- * 5. Execute Python with LIVE AQI values
- * 6. Save task
+ * 3. Generated Code Safety Gate  <-- inspects the code BEFORE scheduling
+ * 4. Analyse complexity
+ * 5. Dispatch to GPU node
+ * 6. Execute Python with LIVE AQI values (sandboxed: time + memory limit)
+ * 7. Save task, including the gate's verdict/reason
  */
 @Service
 public class TaskOrchestrationService {
 
     private final CodexClient codexClient;
     private final AqiClient aqiClient;
+    private final GeneratedCodeSafetyGate safetyGate;
     private final TaskAnalyser taskAnalyser;
     private final TaskDispatcher taskDispatcher;
     private final PipelineRunner pipelineRunner;
@@ -31,12 +35,14 @@ public class TaskOrchestrationService {
     public TaskOrchestrationService(
             CodexClient codexClient,
             AqiClient aqiClient,
+            GeneratedCodeSafetyGate safetyGate,
             TaskAnalyser taskAnalyser,
             TaskDispatcher taskDispatcher,
             PipelineRunner pipelineRunner,
             TaskRepository taskRepository) {
         this.codexClient = codexClient;
         this.aqiClient = aqiClient;
+        this.safetyGate = safetyGate;
         this.taskAnalyser = taskAnalyser;
         this.taskDispatcher = taskDispatcher;
         this.pipelineRunner = pipelineRunner;
@@ -58,6 +64,24 @@ public class TaskOrchestrationService {
             String code = codexClient.generatePipeline(description);
             task.setGeneratedCode(code);
 
+            // ============================================
+            // Generated Code Safety Gate
+            //
+            // Sits between the generator and the scheduler.
+            // Refused code never reaches the dispatcher or the
+            // sandbox - no node is wasted running it.
+            // ============================================
+            SafetyGateResult gateResult = safetyGate.inspect(code);
+            task.setGateVerdict(gateResult.verdict());
+            task.setGateReason(gateResult.reason());
+
+            if (!gateResult.isPassed()) {
+                task.setStatus(TaskStatus.FAILED);
+                task.setErrorMessage("Blocked by Generated Code Safety Gate: " + gateResult.reason());
+                taskRepository.save(task);
+                return task;
+            }
+
             // Analyse complexity (checks both the generated code AND
             // the original description, so GPU-intent tasks are still
             // detected even if code generation failed/refused)
@@ -77,9 +101,18 @@ public class TaskOrchestrationService {
             task.setCo2Kg(decision.energyEstimate().getCo2Kg());
             task.setGreenScore(decision.energyEstimate().getGreenScore());
 
-            // Execute using LIVE AQI values
-            String result = pipelineRunner.run(code, aqi);
-            task.setExecutionResult(result);
+            // Execute using LIVE AQI values, inside the sandbox
+            // (time limit + memory limit enforced in PipelineRunner)
+            PipelineRunner.ExecutionOutcome outcome = pipelineRunner.run(code, aqi);
+            task.setExecutionResult(outcome.output());
+
+            // The sandbox can still STOP a pipeline that passed the
+            // static gate check (e.g. it runs too long or uses too
+            // much memory) - record that as the final gate verdict.
+            if (outcome.verdict() == GateVerdict.STOPPED) {
+                task.setGateVerdict(GateVerdict.STOPPED);
+                task.setGateReason(outcome.gateNote());
+            }
 
             task.setStatus(TaskStatus.COMPLETE);
         } catch (Exception e) {

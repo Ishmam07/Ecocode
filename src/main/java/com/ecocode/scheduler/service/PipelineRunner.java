@@ -1,6 +1,8 @@
 package com.ecocode.scheduler.service;
 
 import com.ecocode.scheduler.model.AqiMeasurement;
+import com.ecocode.scheduler.model.GateVerdict;
+import com.ecocode.scheduler.model.SafetyGateResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -19,8 +21,28 @@ public class PipelineRunner {
 
     private static final int TIMEOUT_SECONDS = 20;
 
+    // Sandbox memory ceiling for the generated pipeline's Python
+    // process. Enforced via "ulimit -v" (virtual memory, KB) so a
+    // runaway pipeline can't exhaust the host's RAM.
+    private static final int MEMORY_LIMIT_MB = 512;
 
-    public String run(String generatedCode, AqiMeasurement aqi) {
+    /**
+     * Result of one sandboxed execution: the raw output/JSON the
+     * pipeline produced, plus the gate verdict for that run
+     * (PASSED = ran to completion, STOPPED = killed for breaking a
+     * sandbox limit).
+     */
+    public record ExecutionOutcome(String output, GateVerdict verdict, String gateNote) {
+        public static ExecutionOutcome ok(String output) {
+            return new ExecutionOutcome(output, GateVerdict.PASSED, "Ran within time and memory limits.");
+        }
+
+        public static ExecutionOutcome stopped(String output, String note) {
+            return new ExecutionOutcome(output, GateVerdict.STOPPED, note);
+        }
+    }
+
+    public ExecutionOutcome run(String generatedCode, AqiMeasurement aqi) {
 
         Path tempFile = null;
 
@@ -60,11 +82,19 @@ public class PipelineRunner {
             );
 
 
+            // Wrap the interpreter call with a shell "ulimit -v" so the
+            // sandbox enforces a hard memory ceiling, not just a time
+            // ceiling. Virtual memory is expressed in KB for ulimit.
+            int memoryLimitKb = MEMORY_LIMIT_MB * 1024;
+            String shellCommand = String.format(
+                    "ulimit -v %d; exec %s %s",
+                    memoryLimitKb,
+                    pythonExecutable,
+                    tempFile
+            );
+
             ProcessBuilder builder =
-                    new ProcessBuilder(
-                            pythonExecutable,
-                            tempFile.toString()
-                    );
+                    new ProcessBuilder("sh", "-c", shellCommand);
 
 
             builder.redirectErrorStream(true);
@@ -85,9 +115,8 @@ public class PipelineRunner {
 
                 process.destroyForcibly();
 
-                return mockResult(
-                        "Python execution timeout"
-                );
+                String note = "Stopped: exceeded the " + TIMEOUT_SECONDS + "s sandbox time limit.";
+                return ExecutionOutcome.stopped(mockResult(note), note);
             }
 
 
@@ -105,23 +134,30 @@ public class PipelineRunner {
             );
 
 
-            if (process.exitValue() != 0) {
+            int exitValue = process.exitValue();
 
-                return mockResult(output);
+            // Exit code 137 = SIGKILL, the common signature of an
+            // OOM-killed or ulimit-killed process.
+            if (exitValue == 137 || output.toLowerCase().contains("memoryerror")) {
+                String note = "Stopped: exceeded the " + MEMORY_LIMIT_MB + "MB sandbox memory limit.";
+                return ExecutionOutcome.stopped(mockResult(note), note);
+            }
 
+            if (exitValue != 0) {
+                return new ExecutionOutcome(mockResult(output), GateVerdict.PASSED,
+                        "Ran to completion; pipeline itself reported an error.");
             }
 
 
             if (output.isBlank()) {
 
-                return mockResult(
-                        "No Python output"
-                );
+                return new ExecutionOutcome(mockResult("No Python output"), GateVerdict.PASSED,
+                        "Ran to completion with no output.");
 
             }
 
 
-            return output;
+            return ExecutionOutcome.ok(output);
 
 
         }
@@ -132,9 +168,8 @@ public class PipelineRunner {
                     e
             );
 
-            return mockResult(
-                    e.getMessage()
-            );
+            return new ExecutionOutcome(mockResult(e.getMessage()), GateVerdict.PASSED,
+                    "Failed to start the sandbox process.");
 
         }
         catch (InterruptedException e) {
@@ -142,9 +177,8 @@ public class PipelineRunner {
             Thread.currentThread()
                     .interrupt();
 
-            return mockResult(
-                    "Execution interrupted"
-            );
+            String note = "Stopped: execution was interrupted.";
+            return ExecutionOutcome.stopped(mockResult(note), note);
 
         }
         finally {

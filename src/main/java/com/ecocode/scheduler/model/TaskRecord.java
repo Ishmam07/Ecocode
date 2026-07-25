@@ -47,6 +47,20 @@ public class TaskRecord {
     // filtered out, e.g. because it was over the extreme-load threshold).
     private boolean fallbackOccurred;
 
+    // ==========================================================
+    // Generated Code Safety Gate
+    //
+    // Sits between the generator and the scheduler. Every pipeline
+    // gets one verdict: PASSED (ran clean), REFUSED (blocked before
+    // it ever reached the scheduler/sandbox), or STOPPED (killed
+    // mid-run for breaking a sandbox time/memory limit).
+    // ==========================================================
+    @Enumerated(EnumType.STRING)
+    private GateVerdict gateVerdict;
+
+    @Column(length = 500)
+    private String gateReason;
+
     private double estimatedKwh;
     private double co2Kg;
     private double greenScore;
@@ -123,6 +137,22 @@ public class TaskRecord {
 
     public void setFallbackOccurred(boolean fallbackOccurred) {
         this.fallbackOccurred = fallbackOccurred;
+    }
+
+    public GateVerdict getGateVerdict() {
+        return gateVerdict;
+    }
+
+    public void setGateVerdict(GateVerdict gateVerdict) {
+        this.gateVerdict = gateVerdict;
+    }
+
+    public String getGateReason() {
+        return gateReason;
+    }
+
+    public void setGateReason(String gateReason) {
+        this.gateReason = gateReason;
     }
 
     public double getEstimatedKwh() {
