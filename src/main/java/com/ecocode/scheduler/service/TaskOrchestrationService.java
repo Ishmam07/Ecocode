@@ -71,7 +71,7 @@ public class TaskOrchestrationService {
             // Refused code never reaches the dispatcher or the
             // sandbox - no node is wasted running it.
             // ============================================
-            SafetyGateResult gateResult = safetyGate.inspect(code);
+            SafetyGateResult gateResult = safetyGate.inspect(code, description);
             task.setGateVerdict(gateResult.verdict());
             task.setGateReason(gateResult.reason());
 

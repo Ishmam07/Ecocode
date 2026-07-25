@@ -17,12 +17,19 @@ import java.util.regex.Pattern;
  * no network calls and costs no API tokens, so it can run on every
  * single task without adding cost.
  *
- * Two things are checked:
- *   1. Does the code try to write outside the allowed working folder?
- *   2. Does the code call a network/service library we did not
- *      explicitly allow (i.e. an "unknown service")?
+ * Two layers are checked:
+ *   1. CODE  - does the generated Python try to write outside the
+ *      allowed working folder, or call a network/service library we
+ *      did not explicitly allow (an "unknown service")?
+ *   2. INTENT - does the *task description itself* ask for something
+ *      unsafe (fetch external data, upload results, run system
+ *      commands, execute dynamic code), even if the LLM ended up
+ *      writing safe/mocked code instead of actually doing it? A task
+ *      that asks for an unsafe capability is refused on intent alone
+ *      - we don't want to depend on the LLM "happening" to fake the
+ *      unsafe part safely every time.
  *
- * If either check fails, the pipeline is REFUSED and never reaches
+ * If either layer fails, the pipeline is REFUSED and never reaches
  * the dispatcher or the Python sandbox. Passing this gate does not
  * guarantee safe *behavior* at runtime (e.g. infinite loops) - that
  * risk is handled separately by the sandbox's time/memory limits in
@@ -34,15 +41,6 @@ public class GeneratedCodeSafetyGate {
 
     private static final Logger log =
             LoggerFactory.getLogger(GeneratedCodeSafetyGate.class);
-
-    // Only these libraries are allowed to be imported by generated
-    // code. Anything calling out to the network, the OS, or another
-    // process is refused as an "unknown service".
-    private static final List<String> ALLOWED_IMPORTS = List.of(
-            "json", "numpy", "np", "pandas", "pd", "math", "statistics",
-            "collections", "itertools", "re", "datetime", "random",
-            "sklearn", "scipy"
-    );
 
     // Import patterns: "import X", "import X as Y", "from X import Y"
     private static final Pattern IMPORT_PATTERN =
@@ -67,14 +65,39 @@ public class GeneratedCodeSafetyGate {
     private static final Pattern SUSPICIOUS_PATH_PATTERN =
             Pattern.compile("[\"']\\s*(/(?!tmp\\b)[a-zA-Z0-9_./]*|[A-Za-z]:\\\\[^\"']*|\\.\\./[^\"']*)\\s*[\"']");
 
+    // Phrases in the task DESCRIPTION that signal an unsafe capability
+    // is being asked for, regardless of what the LLM actually wrote.
+    // This closes the gap where the LLM "plays it safe" by mocking the
+    // unsafe part (e.g. faking an upload instead of really uploading) -
+    // we still don't want to reward/allow that request pattern.
+    private static final List<String> UNSAFE_INTENT_KEYWORDS = List.of(
+            "upload the result", "upload results", "upload to a server", "upload to server",
+            "send to a server", "send to server", "remote server",
+            "external api", "fetch live", "fetch data from",
+            "call an api", "call the api", "http request", "network request",
+            "download from", "post to", "send an email", "send email",
+            "run a system command", "system command", "shell command",
+            "execute a dynamically generated", "execute dynamic code",
+            "delete files", "delete a file", "write to disk at",
+            "access the filesystem", "read environment variables",
+            "install a package", "pip install"
+    );
+
     public SafetyGateResult inspect(String generatedCode) {
+        return inspect(generatedCode, "");
+    }
+
+    public SafetyGateResult inspect(String generatedCode, String description) {
         if (generatedCode == null || generatedCode.isBlank()) {
             return SafetyGateResult.refused("Generated code was empty.");
         }
 
         String code = generatedCode;
+        String lowerDesc = description == null ? "" : description.toLowerCase();
 
-        // 1) Blocked module imports (network / OS / process control)
+        // ===== Layer 1: inspect the generated CODE =====
+
+        // 1a) Blocked module imports (network / OS / process control)
         Matcher importMatcher = IMPORT_PATTERN.matcher(code);
         while (importMatcher.find()) {
             String imported = importMatcher.group(1);
@@ -87,7 +110,7 @@ public class GeneratedCodeSafetyGate {
             }
         }
 
-        // 2) Dangerous dynamic-execution / filesystem calls
+        // 1b) Dangerous dynamic-execution / filesystem calls
         for (String blockedCall : BLOCKED_CALLS) {
             if (code.contains(blockedCall)) {
                 String reason = "Refused: calls '" + blockedCall.replace("(", "") +
@@ -97,7 +120,7 @@ public class GeneratedCodeSafetyGate {
             }
         }
 
-        // 3) Writes outside the allowed working folder
+        // 1c) Writes outside the allowed working folder
         Matcher pathMatcher = SUSPICIOUS_PATH_PATTERN.matcher(code);
         if (pathMatcher.find()) {
             String reason = "Refused: references a path outside the allowed working folder ("
@@ -106,7 +129,22 @@ public class GeneratedCodeSafetyGate {
             return SafetyGateResult.refused(reason);
         }
 
+        // ===== Layer 2: inspect the task DESCRIPTION for unsafe intent =====
+        //
+        // Even if the LLM wrote safe/mocked code, a task that explicitly
+        // asks for network access, file uploads, shell commands, or
+        // dynamic code execution is refused on the request itself - we
+        // don't rely on the LLM continuing to "play it safe" every time.
+        for (String keyword : UNSAFE_INTENT_KEYWORDS) {
+            if (lowerDesc.contains(keyword)) {
+                String reason = "Refused: task description requests an unapproved capability ('"
+                        + keyword + "').";
+                log.warn("Safety gate REFUSED on intent — {}", reason);
+                return SafetyGateResult.refused(reason);
+            }
+        }
+
         log.info("Safety gate PASSED generated code.");
-        return SafetyGateResult.passed("Passed static safety check — no disallowed imports, calls, or paths.");
+        return SafetyGateResult.passed("Passed static safety check — no disallowed imports, calls, paths, or unsafe request intent.");
     }
 }
