@@ -202,8 +202,12 @@ public class PipelineRunner {
                     e
             );
 
-            return new ExecutionOutcome(mockResult(e.getMessage()), GateVerdict.PASSED,
-                    "Failed to start the sandbox process.");
+            // The sandbox never actually ran the pipeline (e.g. the
+            // python3 interpreter isn't installed/on PATH), so this is
+            // NOT a verified "PASSED" run - report it as STOPPED so it
+            // doesn't get counted as if the safety limits were checked.
+            String note = "Stopped: sandbox failed to start (" + e.getMessage() + ").";
+            return ExecutionOutcome.stopped(mockResult(note), note);
 
         }
         catch (InterruptedException e) {
